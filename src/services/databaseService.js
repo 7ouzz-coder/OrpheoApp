@@ -1,3 +1,4 @@
+// src/services/databaseService.js
 import pool from '../config/database.js';
 
 export const databaseService = {
@@ -6,13 +7,36 @@ export const databaseService = {
   // ==========================================
 
   // Seleccionar todos los registros de una tabla
-  async seleccionar(tabla, columnas = '*', orden = {}) {
+  async seleccionar(tabla, columnas = '*', orden = {}, filtro = null) {
     try {
       let query = `SELECT ${columnas} FROM ${tabla}`;
+      const values = [];
+      
+      // Aplicar filtro si existe
+      if (filtro) {
+        query += ' WHERE ';
+        let condiciones = [];
+        
+        Object.entries(filtro).forEach(([columna, valor], index) => {
+          // Para manejar operadores distintos a igualdad (ej: >=, <=, LIKE, etc)
+          if (typeof valor === 'object' && valor !== null && valor.operador) {
+            condiciones.push(`${columna} ${valor.operador} $${index + 1}`);
+            values.push(valor.valor);
+          } else {
+            condiciones.push(`${columna} = $${index + 1}`);
+            values.push(valor);
+          }
+        });
+        
+        query += condiciones.join(' AND ');
+      }
+      
+      // Aplicar ordenamiento
       if (orden.columna) {
         query += ` ORDER BY ${orden.columna} ${orden.ascendente !== false ? 'ASC' : 'DESC'}`;
       }
-      const { rows } = await pool.query(query);
+      
+      const { rows } = await pool.query(query, values);
       return rows;
     } catch (error) {
       console.error(`Error seleccionando de tabla ${tabla}:`, error);
@@ -67,9 +91,9 @@ export const databaseService = {
   // Eliminar un registro
   async eliminar(tabla, id) {
     try {
-      const query = `DELETE FROM ${tabla} WHERE id = $1`;
-      await pool.query(query, [id]);
-      return true;
+      const query = `DELETE FROM ${tabla} WHERE id = $1 RETURNING *`;
+      const { rows } = await pool.query(query, [id]);
+      return rows[0] || null;
     } catch (error) {
       console.error(`Error eliminando registro con ID ${id} de tabla ${tabla}:`, error);
       throw error;
@@ -87,6 +111,43 @@ export const databaseService = {
       return rows;
     } catch (error) {
       console.error(`Error seleccionando con filtro de tabla ${tabla}:`, error);
+      throw error;
+    }
+  },
+
+  // Ejecutar consulta SQL personalizada
+  async ejecutarConsulta(sql, params = []) {
+    try {
+      const { rows } = await pool.query(sql, params);
+      return rows;
+    } catch (error) {
+      console.error(`Error ejecutando consulta SQL:`, error);
+      throw error;
+    }
+  },
+  
+  // Contar registros que cumplen un filtro
+  async contar(tabla, filtro = null) {
+    try {
+      let query = `SELECT COUNT(*) FROM ${tabla}`;
+      const values = [];
+      
+      if (filtro) {
+        query += ' WHERE ';
+        let condiciones = [];
+        
+        Object.entries(filtro).forEach(([columna, valor], index) => {
+          condiciones.push(`${columna} = $${index + 1}`);
+          values.push(valor);
+        });
+        
+        query += condiciones.join(' AND ');
+      }
+      
+      const { rows } = await pool.query(query, values);
+      return parseInt(rows[0].count);
+    } catch (error) {
+      console.error(`Error contando registros en tabla ${tabla}:`, error);
       throw error;
     }
   },
@@ -207,7 +268,43 @@ export const databaseService = {
       return rows;
     } catch (error) {
       console.error('Error obteniendo oficialidad actual:', error);
-      return null;
+      return [];
+    }
+  },
+  
+  // ==========================================
+  // Transacciones
+  // ==========================================
+  
+  // Iniciar transacción
+  async iniciarTransaccion() {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      return client;
+    } catch (error) {
+      client.release();
+      throw error;
+    }
+  },
+  
+  // Confirmar transacción
+  async confirmarTransaccion(client) {
+    try {
+      await client.query('COMMIT');
+    } finally {
+      client.release();
+    }
+  },
+  
+  // Revertir transacción
+  async revertirTransaccion(client) {
+    try {
+      await client.query('ROLLBACK');
+    } finally {
+      client.release();
     }
   }
 };
+
+export default databaseService;

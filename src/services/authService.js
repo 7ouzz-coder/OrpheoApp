@@ -1,47 +1,40 @@
 // src/services/authService.js
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { supabase } from '../config/database';
+import pool from '../config/database.js';
+import { databaseService } from './databaseService.js';
 
 export const authService = {
   // Iniciar sesión
   async login(username, password) {
     try {
       // En producción deberías usar hash para las contraseñas
-      const { data, error } = await supabase
-        .from('usuarios')
-        .select(`
-          id,
-          username,
-          email,
-          rol,
-          grado,
-          cargo,
-          activo,
-          miembro_id,
-          miembro:miembro_id (
-            id,
-            nombres,
-            apellidos
-          )
-        `)
-        .eq('username', username)
-        .eq('password', password)
-        .eq('activo', true)
-        .single();
-
-      if (error) throw error;
-      if (!data) throw new Error('Credenciales incorrectas o usuario inactivo');
-
+      const query = `
+        SELECT 
+          u.id, u.username, u.email, u.rol, u.grado, u.cargo, u.activo, u.miembro_id,
+          m.nombres, m.apellidos
+        FROM usuarios u
+        LEFT JOIN miembros m ON u.miembro_id = m.id
+        WHERE u.username = $1 AND u.password = $2 AND u.activo = true
+      `;
+      
+      const { rows } = await pool.query(query, [username, password]);
+      
+      if (rows.length === 0) {
+        throw new Error('Credenciales incorrectas o usuario inactivo');
+      }
+      
+      const user = rows[0];
+      
       // Preparar datos de usuario
       const userData = {
-        id: data.id,
-        username: data.username,
-        email: data.email,
-        rol: data.rol,
-        grado: data.grado,
-        cargo: data.cargo || '',
-        miembro_id: data.miembro_id,
-        fullName: data.miembro ? `${data.miembro.nombres} ${data.miembro.apellidos}` : username
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        rol: user.rol,
+        grado: user.grado,
+        cargo: user.cargo || '',
+        miembro_id: user.miembro_id,
+        fullName: user.nombres && user.apellidos ? `${user.nombres} ${user.apellidos}` : user.username
       };
 
       return userData;
@@ -53,61 +46,77 @@ export const authService = {
 
   // Registrar nuevo usuario
   async register(userData) {
+    const client = await databaseService.iniciarTransaccion();
+    
     try {
       // 1. Crear el registro del miembro
-      const miembroData = {
-        nombres: userData.nombres,
-        apellidos: userData.apellidos,
-        rut: userData.rut,
-        fecha_nacimiento: userData.fechaNacimiento,
-        profesion: userData.profesion,
-        email: userData.email,
-        telefono: userData.telefono,
-        direccion: userData.direccion,
-        grado: 'aprendiz',
-        fecha_iniciacion: userData.fechaIniciacion,
-        contacto_emergencia_nombre: userData.contactoEmergenciaNombre,
-        contacto_emergencia_telefono: userData.contactoEmergenciaTelefono,
-        situacion_salud: userData.situacionSalud,
-        pareja_nombre: userData.parejaNombre,
-        pareja_telefono: userData.parejaTelefono,
-        pareja_cumpleanos: userData.parejaCumpleanos,
-        trabajo_nombre: userData.trabajoNombre,
-        trabajo_cargo: userData.trabajoCargo,
-        trabajo_direccion: userData.trabajoDireccion,
-        trabajo_email: userData.trabajoEmail,
-        trabajo_telefono: userData.trabajoTelefono
-      };
-
-      const { data: miembro, error: miembroError } = await supabase
-        .from('miembros')
-        .insert([miembroData])
-        .select()
-        .single();
-
-      if (miembroError) throw miembroError;
-
+      const miembroQuery = `
+        INSERT INTO miembros (
+          nombres, apellidos, rut, fecha_nacimiento, profesion, email, 
+          telefono, direccion, grado, fecha_iniciacion, 
+          contacto_emergencia_nombre, contacto_emergencia_telefono,
+          situacion_salud, pareja_nombre, pareja_telefono, pareja_cumpleanos,
+          trabajo_nombre, trabajo_cargo, trabajo_direccion, trabajo_email, trabajo_telefono
+        ) VALUES (
+          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, 
+          $16, $17, $18, $19, $20, $21
+        ) RETURNING *
+      `;
+      
+      const miembroValues = [
+        userData.nombres || '',
+        userData.apellidos || '',
+        userData.rut || '',
+        userData.fechaNacimiento || null,
+        userData.profesion || '',
+        userData.email || '',
+        userData.telefono || '',
+        userData.direccion || '',
+        'aprendiz', // grado por defecto
+        userData.fechaIniciacion || null,
+        userData.contactoEmergenciaNombre || '',
+        userData.contactoEmergenciaTelefono || '',
+        userData.situacionSalud || '',
+        userData.parejaNombre || '',
+        userData.parejaTelefono || '',
+        userData.parejaCumpleanos || null,
+        userData.trabajoNombre || '',
+        userData.trabajoCargo || '',
+        userData.trabajoDireccion || '',
+        userData.trabajoEmail || '',
+        userData.trabajoTelefono || ''
+      ];
+      
+      const miembroResult = await client.query(miembroQuery, miembroValues);
+      const miembro = miembroResult.rows[0];
+      
       // 2. Crear el usuario asociado al miembro
-      const usuarioData = {
-        username: userData.username,
-        password: userData.password, // En producción usar hash
-        email: userData.email,
-        rol: 'general',
-        grado: 'aprendiz',
-        activo: false, // Requiere aprobación del admin
-        miembro_id: miembro.id
-      };
-
-      const { data: usuario, error: usuarioError } = await supabase
-        .from('usuarios')
-        .insert([usuarioData])
-        .select()
-        .single();
-
-      if (usuarioError) throw usuarioError;
-
+      const usuarioQuery = `
+        INSERT INTO usuarios (
+          username, password, email, rol, grado, activo, miembro_id
+        ) VALUES (
+          $1, $2, $3, $4, $5, $6, $7
+        ) RETURNING *
+      `;
+      
+      const usuarioValues = [
+        userData.username,
+        userData.password, // En producción usar hash
+        userData.email || '',
+        'general', // rol por defecto
+        'aprendiz', // grado por defecto
+        false, // inactivo por defecto, requiere aprobación
+        miembro.id
+      ];
+      
+      const usuarioResult = await client.query(usuarioQuery, usuarioValues);
+      const usuario = usuarioResult.rows[0];
+      
+      await databaseService.confirmarTransaccion(client);
+      
       return { success: true, miembro, usuario };
     } catch (error) {
+      await databaseService.revertirTransaccion(client);
       console.error('Error en registro:', error);
       throw error;
     }
@@ -156,28 +165,26 @@ export const authService = {
   // Solicitar recuperación de contraseña
   async solicitarRecuperacionPassword(email) {
     try {
-      // Buscar usuario con ese email
-      const { data: miembro, error: miembroError } = await supabase
-        .from('miembros')
-        .select('id')
-        .eq('email', email)
-        .single();
-
-      if (miembroError || !miembro) {
+      // Buscar el miembro con ese correo electrónico
+      const miembroQuery = `SELECT id FROM miembros WHERE email = $1`;
+      const miembroResult = await pool.query(miembroQuery, [email]);
+      
+      if (miembroResult.rows.length === 0) {
         throw new Error('No se encontró ningún usuario con ese correo electrónico');
       }
-
-      // Buscar el usuario asociado
-      const { data: usuario, error: usuarioError } = await supabase
-        .from('usuarios')
-        .select('id')
-        .eq('miembro_id', miembro.id)
-        .single();
-
-      if (usuarioError || !usuario) {
+      
+      const miembroId = miembroResult.rows[0].id;
+      
+      // Buscar el usuario asociado al miembro
+      const usuarioQuery = `SELECT id FROM usuarios WHERE miembro_id = $1`;
+      const usuarioResult = await pool.query(usuarioQuery, [miembroId]);
+      
+      if (usuarioResult.rows.length === 0) {
         throw new Error('No se encontró una cuenta asociada a este correo');
       }
-
+      
+      const usuarioId = usuarioResult.rows[0].id;
+      
       // Generar token de recuperación
       const token = Math.random().toString(36).substring(2, 15) + 
                     Math.random().toString(36).substring(2, 15);
@@ -185,21 +192,23 @@ export const authService = {
       // Calcular fecha de expiración (1 hora)
       const expiracion = new Date();
       expiracion.setHours(expiracion.getHours() + 1);
-
+      
       // Guardar token en la base de datos
-      await supabase
-        .from('recuperacion_password')
-        .insert([{
-          usuario_id: usuario.id,
-          token,
-          expiracion: expiracion.toISOString(),
-          utilizado: false
-        }]);
-
+      const tokenQuery = `
+        INSERT INTO recuperacion_password (
+          usuario_id, token, expiracion, utilizado
+        ) VALUES ($1, $2, $3, $4)
+      `;
+      
+      await pool.query(tokenQuery, [usuarioId, token, expiracion.toISOString(), false]);
+      
       // En una implementación real, aquí enviaríamos un correo al usuario
       // con un enlace que contiene el token
       
-      return { success: true, message: 'Se ha enviado un correo con instrucciones para recuperar tu contraseña' };
+      return { 
+        success: true, 
+        message: 'Se ha enviado un correo con instrucciones para recuperar tu contraseña' 
+      };
     } catch (error) {
       console.error('Error en recuperación de contraseña:', error);
       throw error;
@@ -209,19 +218,18 @@ export const authService = {
   // Verificar token de recuperación
   async verificarTokenRecuperacion(token) {
     try {
-      const { data, error } = await supabase
-        .from('recuperacion_password')
-        .select('*')
-        .eq('token', token)
-        .eq('utilizado', false)
-        .gt('expiracion', new Date().toISOString())
-        .single();
-
-      if (error || !data) {
+      const query = `
+        SELECT * FROM recuperacion_password
+        WHERE token = $1 AND utilizado = false AND expiracion > $2
+      `;
+      
+      const { rows } = await pool.query(query, [token, new Date().toISOString()]);
+      
+      if (rows.length === 0) {
         throw new Error('Token inválido o expirado');
       }
-
-      return { success: true, usuarioId: data.usuario_id };
+      
+      return { success: true, usuarioId: rows[0].usuario_id };
     } catch (error) {
       console.error('Error verificando token:', error);
       throw error;
@@ -230,32 +238,46 @@ export const authService = {
 
   // Restablecer contraseña
   async restablecerPassword(token, nuevaPassword) {
+    const client = await databaseService.iniciarTransaccion();
+    
     try {
       // Verificar token
-      const { success, usuarioId } = await this.verificarTokenRecuperacion(token);
+      const tokenQuery = `
+        SELECT usuario_id FROM recuperacion_password
+        WHERE token = $1 AND utilizado = false AND expiracion > $2
+      `;
       
-      if (!success) {
+      const tokenResult = await client.query(tokenQuery, [token, new Date().toISOString()]);
+      
+      if (tokenResult.rows.length === 0) {
         throw new Error('Token inválido o expirado');
       }
-
+      
+      const usuarioId = tokenResult.rows[0].usuario_id;
+      
       // Actualizar contraseña
-      const { error: passwordError } = await supabase
-        .from('usuarios')
-        .update({ password: nuevaPassword }) // En producción usar hash
-        .eq('id', usuarioId);
-
-      if (passwordError) throw passwordError;
-
+      const passwordQuery = `
+        UPDATE usuarios SET password = $1 WHERE id = $2
+      `;
+      
+      await client.query(passwordQuery, [nuevaPassword, usuarioId]);
+      
       // Marcar token como utilizado
-      await supabase
-        .from('recuperacion_password')
-        .update({ utilizado: true })
-        .eq('token', token);
-
+      const updateTokenQuery = `
+        UPDATE recuperacion_password SET utilizado = true WHERE token = $1
+      `;
+      
+      await client.query(updateTokenQuery, [token]);
+      
+      await databaseService.confirmarTransaccion(client);
+      
       return { success: true, message: 'Contraseña actualizada correctamente' };
     } catch (error) {
+      await databaseService.revertirTransaccion(client);
       console.error('Error restableciendo contraseña:', error);
       throw error;
     }
   }
 };
+
+export default authService;

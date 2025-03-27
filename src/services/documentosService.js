@@ -1,35 +1,77 @@
 // src/services/documentosService.js
-import { supabase } from '../config/database';
+import pool from '../config/database.js';
+import { databaseService } from './databaseService.js';
+import fs from 'fs';
+import path from 'path';
+
+// Configuración para almacenamiento local de archivos
+const STORAGE_DIR = process.env.STORAGE_DIR || './storage';
+const DOCUMENTOS_DIR = path.join(STORAGE_DIR, 'documentos');
+const PLANCHAS_DIR = path.join(STORAGE_DIR, 'planchas');
+
+// Asegurar que los directorios existan
+try {
+  if (!fs.existsSync(STORAGE_DIR)){
+    fs.mkdirSync(STORAGE_DIR, { recursive: true });
+  }
+  if (!fs.existsSync(DOCUMENTOS_DIR)){
+    fs.mkdirSync(DOCUMENTOS_DIR, { recursive: true });
+  }
+  if (!fs.existsSync(PLANCHAS_DIR)){
+    fs.mkdirSync(PLANCHAS_DIR, { recursive: true });
+  }
+} catch (error) {
+  console.error('Error creando directorios de almacenamiento:', error);
+}
 
 export const documentosService = {
   // Obtener documentos por categoría y subcategoría
   async obtenerPorCategoria(categoria, subcategoria = null) {
     try {
-      let query = supabase
-        .from('documentos')
-        .select(`
-          *,
-          autor:autor(
-            id,
-            nombres,
-            apellidos
-          ),
-          subido_por:subido_por(
-            id,
-            username
-          )
-        `)
-        .eq('categoria', categoria)
-        .order('created_at', { ascending: false });
+      let query = `
+        SELECT 
+          d.*,
+          a.id as autor_id, a.nombres as autor_nombres, a.apellidos as autor_apellidos,
+          u.id as subido_por_id, u.username as subido_por_username
+        FROM documentos d
+        LEFT JOIN miembros a ON d.autor = a.id
+        LEFT JOIN usuarios u ON d.subido_por = u.id
+        WHERE d.categoria = $1
+      `;
+      
+      const params = [categoria];
       
       if (subcategoria) {
-        query = query.eq('subcategoria', subcategoria);
+        query += ` AND d.subcategoria = $2`;
+        params.push(subcategoria);
       }
       
-      const { data, error } = await query;
+      query += ` ORDER BY d.created_at DESC`;
       
-      if (error) throw error;
-      return data || [];
+      const { rows } = await pool.query(query, params);
+      
+      // Formatear el resultado para mantener compatibilidad
+      return rows.map(doc => ({
+        id: doc.id,
+        nombre: doc.nombre,
+        tipo: doc.tipo,
+        tamano: doc.tamano,
+        descripcion: doc.descripcion,
+        url: doc.url,
+        categoria: doc.categoria,
+        subcategoria: doc.subcategoria,
+        palabras_clave: doc.palabras_clave,
+        created_at: doc.created_at,
+        autor: doc.autor_id ? {
+          id: doc.autor_id,
+          nombres: doc.autor_nombres,
+          apellidos: doc.autor_apellidos
+        } : null,
+        subido_por: doc.subido_por_id ? {
+          id: doc.subido_por_id,
+          username: doc.subido_por_username
+        } : null
+      }));
     } catch (error) {
       console.error(`Error obteniendo documentos de ${categoria}:`, error);
       return [];
@@ -55,25 +97,45 @@ export const documentosService = {
           break;
       }
       
-      const { data, error } = await supabase
-        .from('documentos')
-        .select(`
-          *,
-          autor:autor(
-            id,
-            nombres,
-            apellidos
-          ),
-          subido_por:subido_por(
-            id,
-            username
-          )
-        `)
-        .in('categoria', categorias)
-        .order('created_at', { ascending: false });
-        
-      if (error) throw error;
-      return data || [];
+      // Crear placeholders para la consulta SQL
+      const placeholders = categorias.map((_, index) => `$${index + 1}`).join(', ');
+      
+      const query = `
+        SELECT 
+          d.*,
+          a.id as autor_id, a.nombres as autor_nombres, a.apellidos as autor_apellidos,
+          u.id as subido_por_id, u.username as subido_por_username
+        FROM documentos d
+        LEFT JOIN miembros a ON d.autor = a.id
+        LEFT JOIN usuarios u ON d.subido_por = u.id
+        WHERE d.categoria IN (${placeholders})
+        ORDER BY d.created_at DESC
+      `;
+      
+      const { rows } = await pool.query(query, categorias);
+      
+      // Formatear el resultado para mantener compatibilidad
+      return rows.map(doc => ({
+        id: doc.id,
+        nombre: doc.nombre,
+        tipo: doc.tipo,
+        tamano: doc.tamano,
+        descripcion: doc.descripcion,
+        url: doc.url,
+        categoria: doc.categoria,
+        subcategoria: doc.subcategoria,
+        palabras_clave: doc.palabras_clave,
+        created_at: doc.created_at,
+        autor: doc.autor_id ? {
+          id: doc.autor_id,
+          nombres: doc.autor_nombres,
+          apellidos: doc.autor_apellidos
+        } : null,
+        subido_por: doc.subido_por_id ? {
+          id: doc.subido_por_id,
+          username: doc.subido_por_username
+        } : null
+      }));
     } catch (error) {
       console.error('Error obteniendo documentos permitidos:', error);
       return [];
@@ -99,27 +161,51 @@ export const documentosService = {
           break;
       }
       
-      // Buscar en palabras clave, descripción y nombre
-      const { data, error } = await supabase
-        .from('documentos')
-        .select(`
-          *,
-          autor:autor(
-            id,
-            nombres,
-            apellidos
-          ),
-          subido_por:subido_por(
-            id,
-            username
-          )
-        `)
-        .in('categoria', categorias)
-        .or(`descripcion.ilike.%${palabraClave}%,nombre.ilike.%${palabraClave}%,palabras_clave.ilike.%${palabraClave}%`)
-        .order('created_at', { ascending: false });
+      // Crear placeholders para la consulta SQL
+      const placeholdersCategoria = categorias.map((_, index) => `$${index + 1}`).join(', ');
+      const paramsBusqueda = [...categorias, `%${palabraClave}%`, `%${palabraClave}%`, `%${palabraClave}%`];
       
-      if (error) throw error;
-      return data || [];
+      const query = `
+        SELECT 
+          d.*,
+          a.id as autor_id, a.nombres as autor_nombres, a.apellidos as autor_apellidos,
+          u.id as subido_por_id, u.username as subido_por_username
+        FROM documentos d
+        LEFT JOIN miembros a ON d.autor = a.id
+        LEFT JOIN usuarios u ON d.subido_por = u.id
+        WHERE d.categoria IN (${placeholdersCategoria})
+        AND (
+          d.descripcion ILIKE $${categorias.length + 1} OR
+          d.nombre ILIKE $${categorias.length + 2} OR
+          d.palabras_clave ILIKE $${categorias.length + 3}
+        )
+        ORDER BY d.created_at DESC
+      `;
+      
+      const { rows } = await pool.query(query, paramsBusqueda);
+      
+      // Formatear el resultado para mantener compatibilidad
+      return rows.map(doc => ({
+        id: doc.id,
+        nombre: doc.nombre,
+        tipo: doc.tipo,
+        tamano: doc.tamano,
+        descripcion: doc.descripcion,
+        url: doc.url,
+        categoria: doc.categoria,
+        subcategoria: doc.subcategoria,
+        palabras_clave: doc.palabras_clave,
+        created_at: doc.created_at,
+        autor: doc.autor_id ? {
+          id: doc.autor_id,
+          nombres: doc.autor_nombres,
+          apellidos: doc.autor_apellidos
+        } : null,
+        subido_por: doc.subido_por_id ? {
+          id: doc.subido_por_id,
+          username: doc.subido_por_username
+        } : null
+      }));
     } catch (error) {
       console.error('Error buscando documentos:', error);
       return [];
@@ -129,192 +215,44 @@ export const documentosService = {
   // Obtener planchas por grado
   async obtenerPlanchas(grado) {
     try {
-      const { data, error } = await supabase
-        .from('planchas')
-        .select(`
-          *,
-          autor:autor_id(
-            id,
-            nombres,
-            apellidos
-          ),
-          documento:documento_id(*)
-        `)
-        .eq('grado', grado)
-        .order('fecha_presentacion', { ascending: false });
+      const query = `
+        SELECT 
+          p.*,
+          a.id as autor_id, a.nombres as autor_nombres, a.apellidos as autor_apellidos,
+          d.id as documento_id, d.nombre, d.tipo, d.tamano, d.descripcion, d.url, 
+          d.categoria, d.subcategoria, d.palabras_clave, d.created_at
+        FROM planchas p
+        LEFT JOIN miembros a ON p.autor_id = a.id
+        LEFT JOIN documentos d ON p.documento_id = d.id
+        WHERE p.grado = $1
+        ORDER BY p.fecha_presentacion DESC
+      `;
       
-      if (error) throw error;
-      return data || [];
-    } catch (error) {
-      console.error(`Error obteniendo planchas de ${grado}:`, error);
-      return [];
-    }
-  },
-  
-  // Obtener plancha por ID
-  async obtenerPlanchaPorId(id) {
-    try {
-      const { data, error } = await supabase
-        .from('planchas')
-        .select(`
-          *,
-          autor:autor_id(
-            id,
-            nombres,
-            apellidos
-          ),
-          documento:documento_id(*)
-        `)
-        .eq('id', id)
-        .single();
+      const { rows } = await pool.query(query, [grado]);
       
-      if (error) throw error;
-      return data;
-    } catch (error) {
-      console.error('Error obteniendo plancha por ID:', error);
-      throw error;
-    }
-  },
-  
-  // Crear nueva plancha
-  async crearPlancha(plancha, documento) {
-    try {
-      // Primero creamos el documento
-      const { data: docData, error: docError } = await supabase
-        .from('documentos')
-        .insert([documento])
-        .select();
-      
-      if (docError) throw docError;
-      
-      // Luego creamos la plancha con referencia al documento
-      const planchaCompleta = {
-        ...plancha,
-        documento_id: docData[0].id
-      };
-      
-      const { data, error } = await supabase
-        .from('planchas')
-        .insert([planchaCompleta])
-        .select();
-      
-      if (error) throw error;
-      return data[0];
-    } catch (error) {
-      console.error('Error creando plancha:', error);
-      throw error;
-    }
-  },
-  
-  // Actualizar plancha
-  async actualizarPlancha(id, plancha) {
-    try {
-      const { data, error } = await supabase
-        .from('planchas')
-        .update(plancha)
-        .eq('id', id)
-        .select();
-      
-      if (error) throw error;
-      return data[0];
-    } catch (error) {
-      console.error('Error actualizando plancha:', error);
-      throw error;
-    }
-  },
-  
-  // Crear documento
-  async crear(documento) {
-    try {
-      // Si el usuario actual está identificado, asignar como subido_por
-      if (global.userId && !documento.subido_por) {
-        documento.subido_por = global.userId;
-      }
-      
-      const { data, error } = await supabase
-        .from('documentos')
-        .insert([documento])
-        .select();
-      
-      if (error) throw error;
-      return data[0];
-    } catch (error) {
-      console.error('Error creando documento:', error);
-      throw error;
-    }
-  },
-  
-  // Eliminar documento
-  async eliminar(id) {
-    try {
-      // Verificar si el documento está siendo usado en alguna plancha
-      const { data: planchas, error: planchasError } = await supabase
-        .from('planchas')
-        .select('id')
-        .eq('documento_id', id);
-      
-      if (planchasError) throw planchasError;
-      
-      // Si el documento está siendo usado, no lo eliminamos
-      if (planchas && planchas.length > 0) {
-        throw new Error('No se puede eliminar el documento porque está siendo usado en una plancha');
-      }
-      
-      const { data, error } = await supabase
-        .from('documentos')
-        .delete()
-        .eq('id', id);
-      
-      if (error) throw error;
-      return true;
-    } catch (error) {
-      console.error('Error eliminando documento:', error);
-      throw error;
-    }
-  },
-  
-  // Obtener documento por ID
-  async obtenerPorId(id) {
-    try {
-      const { data, error } = await supabase
-        .from('documentos')
-        .select(`
-          *,
-          autor:autor(
-            id,
-            nombres,
-            apellidos
-          ),
-          subido_por:subido_por(
-            id,
-            username
-          )
-        `)
-        .eq('id', id)
-        .single();
-      
-      if (error) throw error;
-      return data;
-    } catch (error) {
-      console.error('Error obteniendo documento por ID:', error);
-      throw error;
-    }
-  },
-  
-  // Actualizar documento
-  async actualizar(id, documento) {
-    try {
-      const { data, error } = await supabase
-        .from('documentos')
-        .update(documento)
-        .eq('id', id)
-        .select();
-      
-      if (error) throw error;
-      return data[0];
-    } catch (error) {
-      console.error('Error actualizando documento:', error);
-      throw error;
-    }
-  }
-};
+      // Formatear el resultado para mantener compatibilidad
+      return rows.map(p => ({
+        id: p.id,
+        titulo: p.titulo,
+        autor_id: p.autor_id,
+        fecha_presentacion: p.fecha_presentacion,
+        grado: p.grado,
+        contenido: p.contenido,
+        estado: p.estado,
+        comentarios: p.comentarios,
+        documento_id: p.documento_id,
+        autor: p.autor_id ? {
+          id: p.autor_id,
+          nombres: p.autor_nombres,
+          apellidos: p.autor_apellidos
+        } : null,
+        documento: p.documento_id ? {
+          id: p.documento_id,
+          nombre: p.nombre,
+          tipo: p.tipo,
+          tamano: p.tamano,
+          descripcion: p.descripcion,
+          url: p.url,
+          categoria: p.categoria,
+          subcategoria: p.subcategoria,
+          palabras_clave: p.palabras_clave

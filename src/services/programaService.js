@@ -1,19 +1,19 @@
 // src/services/programaService.js
-import { supabase } from '../config/database';
+import pool from '../config/database.js';
+import { databaseService } from './databaseService.js';
 
 export const programaService = {
   // Obtener programas por grado y tipo
   async obtenerPorGradoYTipo(grado, tipo) {
     try {
-      const { data, error } = await supabase
-        .from('programa_docente')
-        .select('*')
-        .eq('grado', grado)
-        .eq('tipo', tipo)
-        .order('fecha', { ascending: true });
+      const query = `
+        SELECT * FROM programa_docente
+        WHERE grado = $1 AND tipo = $2
+        ORDER BY fecha ASC
+      `;
       
-      if (error) throw error;
-      return data || [];
+      const { rows } = await pool.query(query, [grado, tipo]);
+      return rows || [];
     } catch (error) {
       console.error(`Error obteniendo programas de ${grado} (${tipo}):`, error);
       return [];
@@ -39,17 +39,18 @@ export const programaService = {
           break;
       }
       
-      const { data, error } = await supabase
-        .from('programa_docente')
-        .select(`
-          *,
-          creador:creado_por(username)
-        `)
-        .in('grado', grados)
-        .order('fecha', { ascending: true });
+      const placeholders = grados.map((_, index) => `$${index + 1}`).join(', ');
+      
+      const query = `
+        SELECT p.*, u.username AS creador
+        FROM programa_docente p
+        LEFT JOIN usuarios u ON p.creado_por = u.id
+        WHERE p.grado IN (${placeholders})
+        ORDER BY p.fecha ASC
+      `;
         
-      if (error) throw error;
-      return data || [];
+      const { rows } = await pool.query(query, grados);
+      return rows || [];
     } catch (error) {
       console.error('Error obteniendo programas permitidos:', error);
       return [];
@@ -59,17 +60,16 @@ export const programaService = {
   // Obtener programas por tipo (cámara o trabajo)
   async obtenerPorTipo(tipo) {
     try {
-      const { data, error } = await supabase
-        .from('programa_docente')
-        .select(`
-          *,
-          creador:creado_por(username)
-        `)
-        .eq('tipo', tipo)
-        .order('fecha', { ascending: true });
+      const query = `
+        SELECT p.*, u.username AS creador
+        FROM programa_docente p
+        LEFT JOIN usuarios u ON p.creado_por = u.id
+        WHERE p.tipo = $1
+        ORDER BY p.fecha ASC
+      `;
       
-      if (error) throw error;
-      return data || [];
+      const { rows } = await pool.query(query, [tipo]);
+      return rows || [];
     } catch (error) {
       console.error(`Error obteniendo programas de tipo ${tipo}:`, error);
       return [];
@@ -79,17 +79,20 @@ export const programaService = {
   // Obtener programa por ID con detalles
   async obtenerPorId(id) {
     try {
-      const { data, error } = await supabase
-        .from('programa_docente')
-        .select(`
-          *,
-          creador:creado_por(username)
-        `)
-        .eq('id', id)
-        .single();
+      const query = `
+        SELECT p.*, u.username AS creador
+        FROM programa_docente p
+        LEFT JOIN usuarios u ON p.creado_por = u.id
+        WHERE p.id = $1
+      `;
       
-      if (error) throw error;
-      return data;
+      const { rows } = await pool.query(query, [id]);
+      
+      if (rows.length === 0) {
+        throw new Error(`No se encontró programa con ID: ${id}`);
+      }
+      
+      return rows[0];
     } catch (error) {
       console.error('Error obteniendo programa por ID:', error);
       throw error;
@@ -104,13 +107,21 @@ export const programaService = {
         programa.creado_por = global.userId;
       }
       
-      const { data, error } = await supabase
-        .from('programa_docente')
-        .insert([programa])
-        .select();
+      // Obtener las columnas y valores del objeto programa
+      const columns = Object.keys(programa);
+      const values = Object.values(programa);
       
-      if (error) throw error;
-      return data[0];
+      // Crear los placeholders para la consulta SQL ($1, $2, etc.)
+      const placeholders = values.map((_, index) => `$${index + 1}`).join(', ');
+      
+      const query = `
+        INSERT INTO programa_docente (${columns.join(', ')})
+        VALUES (${placeholders})
+        RETURNING *
+      `;
+      
+      const { rows } = await pool.query(query, values);
+      return rows[0];
     } catch (error) {
       console.error('Error creando programa:', error);
       throw error;
@@ -120,14 +131,30 @@ export const programaService = {
   // Actualizar programa existente
   async actualizar(id, programa) {
     try {
-      const { data, error } = await supabase
-        .from('programa_docente')
-        .update(programa)
-        .eq('id', id)
-        .select();
+      // Obtener las columnas y valores del objeto programa
+      const columns = Object.keys(programa);
+      const values = Object.values(programa);
       
-      if (error) throw error;
-      return data[0];
+      // Crear la parte SET de la consulta SQL
+      const setClause = columns.map((col, index) => `${col} = $${index + 1}`).join(', ');
+      
+      // Añadir el ID como último parámetro
+      values.push(id);
+      
+      const query = `
+        UPDATE programa_docente
+        SET ${setClause}
+        WHERE id = $${values.length}
+        RETURNING *
+      `;
+      
+      const { rows } = await pool.query(query, values);
+      
+      if (rows.length === 0) {
+        throw new Error(`No se encontró programa con ID: ${id}`);
+      }
+      
+      return rows[0];
     } catch (error) {
       console.error('Error actualizando programa:', error);
       throw error;
@@ -137,13 +164,19 @@ export const programaService = {
   // Eliminar programa
   async eliminar(id) {
     try {
-      const { data, error } = await supabase
-        .from('programa_docente')
-        .delete()
-        .eq('id', id);
+      const query = `
+        DELETE FROM programa_docente
+        WHERE id = $1
+        RETURNING *
+      `;
       
-      if (error) throw error;
-      return true;
+      const { rows } = await pool.query(query, [id]);
+      
+      if (rows.length === 0) {
+        throw new Error(`No se encontró programa con ID: ${id} para eliminar`);
+      }
+      
+      return rows[0];
     } catch (error) {
       console.error('Error eliminando programa:', error);
       throw error;
@@ -153,18 +186,38 @@ export const programaService = {
   // Registrar asistencia a un programa
   async registrarAsistencia(programaId, miembroId, asistio, justificacion = null) {
     try {
-      const { data, error } = await supabase
-        .from('asistencia')
-        .upsert([{
-          evento_id: programaId,
-          miembro_id: miembroId,
-          asistio,
-          justificacion
-        }], { onConflict: 'miembro_id, evento_id' })
-        .select();
+      // Primero verificamos si ya existe una asistencia para este miembro en este programa
+      const checkQuery = `
+        SELECT id FROM asistencia
+        WHERE evento_id = $1 AND miembro_id = $2
+      `;
       
-      if (error) throw error;
-      return data[0];
+      const checkResult = await pool.query(checkQuery, [programaId, miembroId]);
+      
+      let result;
+      
+      if (checkResult.rows.length > 0) {
+        // Ya existe, actualizamos
+        const updateQuery = `
+          UPDATE asistencia
+          SET asistio = $3, justificacion = $4
+          WHERE evento_id = $1 AND miembro_id = $2
+          RETURNING *
+        `;
+        
+        result = await pool.query(updateQuery, [programaId, miembroId, asistio, justificacion]);
+      } else {
+        // No existe, insertamos
+        const insertQuery = `
+          INSERT INTO asistencia (evento_id, miembro_id, asistio, justificacion)
+          VALUES ($1, $2, $3, $4)
+          RETURNING *
+        `;
+        
+        result = await pool.query(insertQuery, [programaId, miembroId, asistio, justificacion]);
+      }
+      
+      return result.rows[0];
     } catch (error) {
       console.error('Error registrando asistencia:', error);
       throw error;
@@ -174,23 +227,29 @@ export const programaService = {
   // Obtener asistencia de un programa
   async obtenerAsistencia(programaId) {
     try {
-      const { data, error } = await supabase
-        .from('asistencia')
-        .select(`
-          id,
-          asistio,
-          justificacion,
-          miembro:miembro_id(
-            id,
-            nombres,
-            apellidos,
-            grado
-          )
-        `)
-        .eq('evento_id', programaId);
+      const query = `
+        SELECT 
+          a.id, a.asistio, a.justificacion,
+          m.id as miembro_id, m.nombres, m.apellidos, m.grado
+        FROM asistencia a
+        LEFT JOIN miembros m ON a.miembro_id = m.id
+        WHERE a.evento_id = $1
+      `;
       
-      if (error) throw error;
-      return data || [];
+      const { rows } = await pool.query(query, [programaId]);
+      
+      // Formatear los resultados para mantener compatibilidad con la estructura anterior
+      return rows.map(row => ({
+        id: row.id,
+        asistio: row.asistio,
+        justificacion: row.justificacion,
+        miembro: {
+          id: row.miembro_id,
+          nombres: row.nombres,
+          apellidos: row.apellidos,
+          grado: row.grado
+        }
+      }));
     } catch (error) {
       console.error('Error obteniendo asistencia:', error);
       return [];
@@ -200,13 +259,13 @@ export const programaService = {
   // Obtener jerarquía organizacional por tipo
   async obtenerJerarquia(tipo) {
     try {
-      const { data, error } = await supabase
-        .from('jerarquia_organizacional')
-        .select('*')
-        .eq('tipo', tipo);
+      const query = `
+        SELECT * FROM jerarquia_organizacional
+        WHERE tipo = $1
+      `;
       
-      if (error) throw error;
-      return data || [];
+      const { rows } = await pool.query(query, [tipo]);
+      return rows || [];
     } catch (error) {
       console.error(`Error obteniendo jerarquía de tipo ${tipo}:`, error);
       return [];
@@ -216,13 +275,13 @@ export const programaService = {
   // Obtener toda la jerarquía organizacional
   async obtenerTodaJerarquia() {
     try {
-      const { data, error } = await supabase
-        .from('jerarquia_organizacional')
-        .select('*')
-        .order('tipo', { ascending: true });
+      const query = `
+        SELECT * FROM jerarquia_organizacional
+        ORDER BY tipo ASC
+      `;
       
-      if (error) throw error;
-      return data || [];
+      const { rows } = await pool.query(query);
+      return rows || [];
     } catch (error) {
       console.error('Error obteniendo toda la jerarquía:', error);
       return [];
@@ -232,14 +291,30 @@ export const programaService = {
   // Actualizar jerarquía
   async actualizarJerarquia(id, datos) {
     try {
-      const { data, error } = await supabase
-        .from('jerarquia_organizacional')
-        .update(datos)
-        .eq('id', id)
-        .select();
+      // Obtener las columnas y valores
+      const columns = Object.keys(datos);
+      const values = Object.values(datos);
       
-      if (error) throw error;
-      return data[0];
+      // Crear la parte SET de la consulta SQL
+      const setClause = columns.map((col, index) => `${col} = $${index + 1}`).join(', ');
+      
+      // Añadir el ID como último parámetro
+      values.push(id);
+      
+      const query = `
+        UPDATE jerarquia_organizacional
+        SET ${setClause}
+        WHERE id = $${values.length}
+        RETURNING *
+      `;
+      
+      const { rows } = await pool.query(query, values);
+      
+      if (rows.length === 0) {
+        throw new Error(`No se encontró jerarquía con ID: ${id}`);
+      }
+      
+      return rows[0];
     } catch (error) {
       console.error('Error actualizando jerarquía:', error);
       throw error;
@@ -251,15 +326,16 @@ export const programaService = {
     try {
       const today = new Date().toISOString().split('T')[0];
       
-      const { data, error } = await supabase
-        .from('programa_docente')
-        .select('*')
-        .gte('fecha', today)
-        .order('fecha', { ascending: true })
-        .limit(limit);
+      const query = `
+        SELECT *
+        FROM programa_docente
+        WHERE fecha >= $1
+        ORDER BY fecha ASC
+        LIMIT $2
+      `;
       
-      if (error) throw error;
-      return data || [];
+      const { rows } = await pool.query(query, [today, limit]);
+      return rows || [];
     } catch (error) {
       console.error('Error obteniendo programas próximos:', error);
       return [];
@@ -270,17 +346,18 @@ export const programaService = {
   async obtenerEstadisticasAsistenciaMiembro(miembroId) {
     try {
       // Obtener todas las asistencias del miembro
-      const { data: asistencias, error: asistenciasError } = await supabase
-        .from('asistencia')
-        .select('asistio, justificacion')
-        .eq('miembro_id', miembroId);
+      const query = `
+        SELECT asistio, justificacion
+        FROM asistencia
+        WHERE miembro_id = $1
+      `;
       
-      if (asistenciasError) throw asistenciasError;
+      const { rows } = await pool.query(query, [miembroId]);
       
       // Calcular estadísticas
-      const total = asistencias.length;
-      const asistidas = asistencias.filter(a => a.asistio).length;
-      const justificadas = asistencias.filter(a => !a.asistio && a.justificacion).length;
+      const total = rows.length;
+      const asistidas = rows.filter(a => a.asistio).length;
+      const justificadas = rows.filter(a => !a.asistio && a.justificacion).length;
       const injustificadas = total - asistidas - justificadas;
       
       return {
@@ -296,3 +373,5 @@ export const programaService = {
     }
   }
 };
+
+export default programaService;

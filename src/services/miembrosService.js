@@ -1,18 +1,19 @@
 // src/services/miembrosService.js
-import { supabase } from '../config/database';
+import pool from '../config/database.js';
+import { databaseService } from './databaseService.js';
 
 export const miembrosService = {
   // Obtener todos los miembros
   async obtenerTodos() {
     try {
-      const { data, error } = await supabase
-        .from('miembros')
-        .select('*')
-        .eq('vigente', true)
-        .order('apellidos', { ascending: true });
+      const query = `
+        SELECT * FROM miembros
+        WHERE vigente = true
+        ORDER BY apellidos ASC
+      `;
       
-      if (error) throw error;
-      return data || [];
+      const { rows } = await pool.query(query);
+      return rows || [];
     } catch (error) {
       console.error('Error obteniendo todos los miembros:', error);
       return [];
@@ -22,14 +23,13 @@ export const miembrosService = {
   // Obtener miembro por ID
   async obtenerPorId(id) {
     try {
-      const { data, error } = await supabase
-        .from('miembros')
-        .select('*')
-        .eq('id', id)
-        .single();
+      const query = `
+        SELECT * FROM miembros
+        WHERE id = $1
+      `;
       
-      if (error) throw error;
-      return data;
+      const { rows } = await pool.query(query, [id]);
+      return rows[0] || null;
     } catch (error) {
       console.error(`Error obteniendo miembro con ID ${id}:`, error);
       throw error;
@@ -39,57 +39,48 @@ export const miembrosService = {
   // Obtener miembros por grado 'aprendiz'
   async obtenerAprendices() {
     try {
-      const { data, error } = await supabase
-        .from('miembros')
-        .select('*')
-        .eq('grado', 'aprendiz')
-        .eq('vigente', true)
-        .order('apellidos', { ascending: true });
+      const query = `
+        SELECT * FROM miembros
+        WHERE grado = 'aprendiz' AND vigente = true
+        ORDER BY apellidos ASC
+      `;
       
-      if (error) {
-        console.error('Error en obtenerAprendices:', error);
-        throw error;
-      }
-      return data || [];
+      const { rows } = await pool.query(query);
+      return rows || [];
     } catch (error) {
-      console.error('Error fatal en obtenerAprendices:', error);
-      return [];
+      console.error('Error en obtenerAprendices:', error);
+      throw error;
     }
   },
 
   // Obtener miembros por grado 'companero'
   async obtenerCompaneros() {
     try {
-      const { data, error } = await supabase
-        .from('miembros')
-        .select('*')
-        .eq('grado', 'companero')
-        .eq('vigente', true)
-        .order('apellidos', { ascending: true });
+      const query = `
+        SELECT * FROM miembros
+        WHERE grado = 'companero' AND vigente = true
+        ORDER BY apellidos ASC
+      `;
       
-      if (error) {
-        console.error('Error en obtenerCompaneros:', error);
-        throw error;
-      }
-      return data || [];
+      const { rows } = await pool.query(query);
+      return rows || [];
     } catch (error) {
-      console.error('Error fatal en obtenerCompaneros:', error);
-      return [];
+      console.error('Error en obtenerCompaneros:', error);
+      throw error;
     }
   },
 
   // Obtener miembros por grado 'maestro'
   async obtenerMaestros() {
     try {
-      const { data, error } = await supabase
-        .from('miembros')
-        .select('*')
-        .eq('grado', 'maestro')
-        .eq('vigente', true)
-        .order('apellidos', { ascending: true });
+      const query = `
+        SELECT * FROM miembros
+        WHERE grado = 'maestro' AND vigente = true
+        ORDER BY apellidos ASC
+      `;
       
-      if (error) throw error;
-      return data || [];
+      const { rows } = await pool.query(query);
+      return rows || [];
     } catch (error) {
       console.error('Error cargando maestros:', error);
       return [];
@@ -100,69 +91,44 @@ export const miembrosService = {
   async obtenerOficialidad() {
     try {
       // Para modo DEMO/Desarrollo: Si no hay conexión a la BD, devolver datos de ejemplo
-      if (!supabase || process.env.NODE_ENV === 'development') {
+      if (process.env.NODE_ENV === 'development') {
         console.log('Modo DEMO: Usando datos de oficialidad de muestra');
         return getOficialidadDemoData();
       }
       
       // Primero obtenemos la oficialidad activa
-      const { data: oficialidad, error: oficialidadError } = await supabase
-        .from('oficialidad')
-        .select('id')
-        .order('periodo_inicio', { ascending: false })
-        .limit(1);
+      const oficialidadQuery = `
+        SELECT id FROM oficialidad
+        ORDER BY periodo_inicio DESC
+        LIMIT 1
+      `;
       
-      if (oficialidadError) {
-        console.log('Error al obtener oficialidad:', oficialidadError);
-        return getOficialidadDemoData();
-      }
+      const oficialidadResult = await pool.query(oficialidadQuery);
       
-      if (!oficialidad || oficialidad.length === 0) {
+      if (oficialidadResult.rows.length === 0) {
         console.log('No se encontró información de oficialidad');
         return getOficialidadDemoData();
       }
-
-      const oficialidadId = oficialidad[0].id;
+      
+      const oficialidadId = oficialidadResult.rows[0].id;
 
       // Obtenemos los cargos de la oficialidad
-      const { data: cargos, error: cargosError } = await supabase
-        .from('cargos_oficialidad')
-        .select(`
-          id,
-          cargo,
-          tipo,
-          es_admin,
-          es_docente,
-          grado_a_cargo,
-          orden,
-          asignaciones:asignacion_cargos(
-            id,
-            fecha_inicio,
-            fecha_fin,
-            activo,
-            miembro:miembro_id(
-              id,
-              nombres,
-              apellidos,
-              email,
-              telefono,
-              profesion
-            )
-          )
-        `)
-        .eq('oficialidad_id', oficialidadId)
-        .order('orden', { ascending: true });
+      const cargosQuery = `
+        SELECT 
+          c.id, c.cargo, c.tipo, c.es_admin, c.es_docente, c.grado_a_cargo, c.orden,
+          a.id as asignacion_id, a.fecha_inicio, a.fecha_fin, a.activo,
+          m.id as miembro_id, m.nombres, m.apellidos, m.email, m.telefono, m.profesion
+        FROM cargos_oficialidad c
+        LEFT JOIN asignacion_cargos a ON c.id = a.cargo_id AND a.activo = true
+        LEFT JOIN miembros m ON a.miembro_id = m.id
+        WHERE c.oficialidad_id = $1
+        ORDER BY c.orden ASC
+      `;
       
-      if (cargosError) {
-        console.error('Error obteniendo cargos:', cargosError);
-        return getOficialidadDemoData();
-      }
-
+      const cargosResult = await pool.query(cargosQuery, [oficialidadId]);
+      
       // Formateamos los datos para presentación
-      const result = cargos.map(cargo => {
-        // Buscamos la asignación activa para este cargo
-        const asignacionActiva = cargo.asignaciones?.find(a => a.activo);
-        
+      const result = cargosResult.rows.map(cargo => {
         return {
           id: cargo.id,
           cargo: cargo.cargo,
@@ -170,7 +136,14 @@ export const miembrosService = {
           es_admin: cargo.es_admin,
           es_docente: cargo.es_docente,
           grado_a_cargo: cargo.grado_a_cargo,
-          miembro: asignacionActiva?.miembro || null
+          miembro: cargo.miembro_id ? {
+            id: cargo.miembro_id,
+            nombres: cargo.nombres,
+            apellidos: cargo.apellidos,
+            email: cargo.email,
+            telefono: cargo.telefono,
+            profesion: cargo.profesion
+          } : null
         };
       });
 
@@ -184,14 +157,28 @@ export const miembrosService = {
   // Actualizar información de un miembro
   async actualizar(id, data) {
     try {
-      const { data: miembro, error } = await supabase
-        .from('miembros')
-        .update(data)
-        .eq('id', id)
-        .select();
+      // Convertir el objeto data en columnas y valores para la consulta SQL
+      const columns = Object.keys(data);
+      const values = Object.values(data);
       
-      if (error) throw error;
-      return miembro;
+      // Crear placeholders para la consulta preparada ($1, $2, etc.)
+      const placeholders = columns.map((_, index) => `$${index + 1}`).join(', ');
+      
+      // Crear la parte SET de la consulta SQL
+      const setClause = columns.map((col, index) => `${col} = $${index + 1}`).join(', ');
+      
+      // Añadir el ID del miembro como último parámetro
+      values.push(id);
+      
+      const query = `
+        UPDATE miembros 
+        SET ${setClause} 
+        WHERE id = $${values.length} 
+        RETURNING *
+      `;
+      
+      const { rows } = await pool.query(query, values);
+      return rows[0] || null;
     } catch (error) {
       console.error('Error actualizando miembro:', error);
       throw error;
@@ -204,14 +191,18 @@ export const miembrosService = {
       // Convertir la consulta a minúsculas para búsqueda insensible a mayúsculas/minúsculas
       const searchTerms = query.toLowerCase();
       
-      const { data, error } = await supabase
-        .from('miembros')
-        .select('*')
-        .or(`nombres.ilike.%${searchTerms}%,apellidos.ilike.%${searchTerms}%,rut.ilike.%${searchTerms}%,profesion.ilike.%${searchTerms}%`)
-        .eq('vigente', true);
+      const sqlQuery = `
+        SELECT * FROM miembros
+        WHERE 
+          (LOWER(nombres) LIKE $1 OR
+          LOWER(apellidos) LIKE $1 OR
+          LOWER(rut) LIKE $1 OR
+          LOWER(profesion) LIKE $1)
+        AND vigente = true
+      `;
       
-      if (error) throw error;
-      return data || [];
+      const { rows } = await pool.query(sqlQuery, [`%${searchTerms}%`]);
+      return rows || [];
     } catch (error) {
       console.error('Error buscando miembros:', error);
       return [];
@@ -332,3 +323,5 @@ function getOficialidadDemoData() {
     }
   ];
 }
+
+export default miembrosService;
